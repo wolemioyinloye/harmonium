@@ -274,3 +274,90 @@
     
     (ok true))
 )
+
+;; Submit royalty payment report
+(define-public (submit-royalty-report (payment-amount uint) (usage-report (string-ascii 256)))
+    (let (
+        (licensee-info (unwrap! (map-get? licensees tx-sender) ERR_NO_LICENSE))
+        (track-info (unwrap! (map-get? music-tracks (get licensed-track-id licensee-info)) ERR_TRACK_NOT_FOUND))
+        (new-payment-id (var-get license-counter))
+        (current-height block-height)
+        (platform-fee (calculate-platform-fee payment-amount))
+        (artist-payment (- payment-amount platform-fee))
+    )
+    (asserts! (not (var-get platform-paused)) ERR_ACCESS_DENIED)
+    (asserts! (get has-active-license licensee-info) ERR_NO_LICENSE)
+    (asserts! (<= current-height (get license-end-height licensee-info)) ERR_LICENSE_EXPIRED)
+    (asserts! (validate-metadata usage-report) ERR_INVALID_METADATA)
+    
+    ;; Process payment
+    (try! (stx-transfer? payment-amount tx-sender (get artist-address track-info)))
+    
+    ;; Update artist earnings
+    (let ((artist-info (unwrap! (map-get? music-artists (get artist-address track-info)) ERR_RECORD_NOT_FOUND)))
+        (map-set music-artists (get artist-address track-info)
+            (merge artist-info { 
+                total-earnings: (+ (get total-earnings artist-info) artist-payment),
+                last-update-height: current-height
+            })
+        )
+    )
+    
+    ;; Create new royalty payment record
+    (map-set royalty-payments new-payment-id
+        {
+            licensee-address: tx-sender,
+            payment-amount: payment-amount,
+            status: "PROCESSED",
+            processing-height: current-height,
+            usage-report: usage-report,
+            distributor: none,
+            distribution-duration: u0
+        }
+    )
+    
+    ;; Update royalty pool
+    (var-set royalty-pool-balance (+ (var-get royalty-pool-balance) platform-fee))
+    
+    ;; Update payment counter
+    (var-set license-counter (+ new-payment-id u1))
+    (ok new-payment-id))
+)
+
+;; Purchase exclusive rights to a track
+(define-public (purchase-exclusive-rights (track-id uint))
+    (let (
+        (track-info (unwrap! (map-get? music-tracks track-id) ERR_TRACK_NOT_FOUND))
+        (artist-info (unwrap! (map-get? music-artists (get artist-address track-info)) ERR_RECORD_NOT_FOUND))
+        (exclusive-price (get exclusive-rights-price track-info))
+        (platform-fee (calculate-platform-fee exclusive-price))
+        (artist-payment (- exclusive-price platform-fee))
+        (current-height block-height)
+    )
+    (asserts! (not (var-get platform-paused)) ERR_ACCESS_DENIED)
+    (asserts! (get available-for-license track-info) ERR_TRACK_UNAVAILABLE)
+    
+    ;; Process payment
+    (try! (stx-transfer? exclusive-price tx-sender (get artist-address track-info)))
+    
+    ;; Update royalty pool
+    (var-set royalty-pool-balance (+ (var-get royalty-pool-balance) platform-fee))
+    
+    ;; Update artist earnings
+    (map-set music-artists (get artist-address track-info)
+        (merge artist-info { 
+            total-earnings: (+ (get total-earnings artist-info) artist-payment),
+            last-update-height: current-height
+        })
+    )
+    
+    ;; Update track availability
+    (map-set music-tracks track-id
+        (merge track-info { 
+            available-for-license: false,
+            exclusive-rights-price: u0
+        })
+    )
+    
+    (ok true))
+)
