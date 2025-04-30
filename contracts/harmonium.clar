@@ -361,3 +361,50 @@
     
     (ok true))
 )
+
+;; Cancel music license
+(define-public (cancel-music-license)
+    (let (
+        (licensee-info (unwrap! (map-get? licensees tx-sender) ERR_NO_LICENSE))
+        (track-info (unwrap! (map-get? music-tracks (get licensed-track-id licensee-info)) ERR_TRACK_NOT_FOUND))
+        (remaining-blocks (- (get license-end-height licensee-info) block-height))
+        (remaining-months (/ remaining-blocks BLOCKS_PER_MONTH))
+        (refund-amount (* remaining-months (get monthly-fee licensee-info)))
+        (platform-fee (calculate-platform-fee refund-amount))
+        (artist-refund (- refund-amount platform-fee))
+    )
+    (asserts! (not (var-get platform-paused)) ERR_ACCESS_DENIED)
+    (asserts! (get has-active-license licensee-info) ERR_NO_LICENSE)
+    
+    ;; Process refund
+    (try! (stx-transfer? artist-refund (get artist-address track-info) tx-sender))
+    
+    ;; Update royalty pool balance
+    (var-set royalty-pool-balance (- (var-get royalty-pool-balance) platform-fee))
+    
+    ;; Remove licensee
+    (map-delete licensees tx-sender)
+    
+    ;; Update track license count
+    (map-set music-tracks (get licensed-track-id licensee-info)
+        (merge track-info { active-license-count: (- (get active-license-count track-info) u1) })
+    )
+    
+    (ok true))
+)
+
+;; Platform pause/unpause
+(define-public (set-platform-status (new-status bool))
+    (begin
+        (asserts! (check-admin-access) ERR_ADMIN_ONLY)
+        (var-set platform-paused new-status)
+        (ok true))
+)
+
+;; Emergency shutdown
+(define-public (emergency-shutdown)
+    (begin
+        (asserts! (check-admin-access) ERR_ADMIN_ONLY)
+        (var-set platform-paused true)
+        (ok true))
+)
